@@ -5,13 +5,13 @@
 **Contribution Number:** 1  
 **Student:** SOKOUDJOU LEOPOLD  
 **Issue:** https://github.com/vllm-project/vllm-omni/issues/3733  
-**Status:** Phase I In Progress
+**Status:** Phase I Complete
 
 ---
 
 ## Why I Chose This Issue
 
-[1-2 paragraphs explaining why this issue interests you, how it matches your skills/learning goals, what you hope to learn]
+I chose this issue because I am proficient in python and related frameworks. Moreover, this project requires working with an image generative model which is a domain I am currently interested in. Upon completion, I hope to understand the architecture of this model.
 
 ---
 
