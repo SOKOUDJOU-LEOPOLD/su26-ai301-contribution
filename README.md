@@ -5,7 +5,7 @@
 **Contribution Number:** 1  
 **Student:** SOKOUDJOU LEOPOLD  
 **Issue:** https://github.com/vllm-project/vllm-omni/issues/3733  
-**Status:** Phase II Complete
+**Status:** Phase III Complete
 
 ---
 
@@ -208,9 +208,38 @@ Before opening the PR, I'll run the precheck-pr skill (referenced from CONTRIBUT
 
 ## Implementation Notes
 
-### Week [X] Progress
+### Week 3 Progress
 
 [What you built this week, challenges faced, decisions made]
+
+#### Implementation Progress
+Built the first phase of HiDream-O1-Image support (Path B — custom/private-repo model, no diffusers pipeline, no VAE) in vllm_omni/diffusion/models/hidream_o1_image/:
+
+utils_hidream_o1.py — ported the position-id logic (get_rope_index_fix_point, 3D MRoPE with the model's "fix_point" anchoring for image spans), resolution snapping, patchify/depatchify (raw pixel patches, no VAE), and a function that builds two parallel attention-masking representations (a dense mask + full_attn_spans) from the same token-type data.
+qwen3_vl_uit_transformer.py — the backbone: imports the vanilla parts of HF's Qwen3-VL directly, and only writes the genuinely new pieces (BottleneckPatchEmbed, TimestepEmbedder, FinalLayer) plus a rewired attention layer/decoder that uses vLLM-Omni's Attention + AttentionMetadata instead of the reference repo's hand-rolled two-pass flash-attention trick.
+pipeline_hidream_o1_image.py — the orchestration: builds the packed text+image sequence, runs the denoise loop with CFG support, remaps the checkpoint's weight names, exposes the model to vLLM-Omni.
+registry.py — registered as HiDreamO1ImagePipeline (kept distinct from the existing, unrelated HiDreamImagePipeline/HiDream-I1 entry).
+Example script + README under examples/offline_inference/hidream_o1_image/, unit tests under tests/diffusion/models/hidream_o1_image/.
+Key commit: 9d10a8e8 — "[Model] Add HiDream-O1-Image text-to-image support" on leopold/Add-HiDream-O1-Image.
+
+#### Challenges Faced
+The model's architecture doesn't look like anything else in the repo: it's one Qwen3-VL-based transformer that diffuses directly on raw pixels (no VAE, no separate text encoder), where text tokens need causal attention and image/timestep tokens need bidirectional attention in the same forward pass. I de-risked this before writing code by reading the reference repo's source directly (via curl/WebFetch against the GitHub repo) and tracing vLLM-Omni's existing piecewise_attn/AttentionMetadata machinery line-by-line, which confirmed it was an exact fit — that saved a lot of guessing.
+
+The harder part was the real bugs that only showed up once I ran it on an actual GPU against the real checkpoint:
+
+A hardcoded module dimension (bottleneck_dim=768) that was wrong — found instantly by checking the checkpoint's actual tensor shapes before guessing.
+A self-inflicted ordering bug (self.scheduler assigned after the denoise loop instead of before it).
+The most subtle one: a missing noise_scale=8.0 multiplier on the initial noise. Without it, the output didn't crash — it just slowly collapsed to flat gray over the course of the denoise loop, which only became obvious by logging per-step latent statistics and comparing 4-step vs. 28-step runs.
+There was also an environment quirk: this is a shared multi-GPU box, and two of the four GPUs were silently reserved by another user (visible only as a generic "CUDA device busy" error, not in nvidia-smi's usage stats) — found by testing each GPU index individually.
+
+#### Testing Strategy
+Two layers:
+
+Unit tests (test_packed_sequence.py, 9 cases) — test the masking/position-id/patchify logic in isolation from model weights: confirms text never attends into the image span, image/timestep positions attend to everything, the position-id anchoring actually jumps away from the naive placement, and multi-span detection works (needed for the next phase's multi-reference-image case).
+Real end-to-end validation on GPU — downloaded the actual HiDream-O1-Image-Dev checkpoint and verified: 100% of 758 parameters load with zero shape mismatches; a full denoise loop runs without NaNs; the output is a genuinely coherent, prompt-matching image (not just "doesn't crash"); both the no-CFG and CFG (2-branch combine) code paths work; and it all runs correctly through the real Omni() engine (multiprocess worker, scheduler, clean shutdown), not just a manual bypass script.
+
+#### Branch Link
+https://github.com/SOKOUDJOU-LEOPOLD/vllm-omni/tree/leopold/Add-HiDream-O1-Image
 
 ### Week [Y] Progress
 
