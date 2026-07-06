@@ -273,6 +273,30 @@ test_embed_cache.py (new) — 3 tests simulating the N-step denoising loop with 
 
 https://github.com/SOKOUDJOU-LEOPOLD/vllm-omni/tree/leopold/Add-HiDream-O1-Image
 
+### Week 5 Progress
+
+#### Implementation Progress:
+
+Added layout bounding-box conditioning to utils_hidream_o1.py and pipeline_hidream_o1_image.py. The core insight was that layout/pose conditioning requires no new attention mechanism — it reuses Phase 2's existing pixel-patch path (token_type=2) unchanged. The new work was purely preprocessing: load_layout_bboxes (accepts a JSON file path or string), parse_layout_bboxes (normalizes xxyy coords from relative [0,1] or percentage [0,100] formats), draw_bbox_layout (renders bboxes as a synthetic color-coded layout image), add_outer_border_keep_size (adds a colored border to each ref image to visually associate it with its bbox), and create_layout_reference_images (orchestrates all of the above into an augmented ref_pils list — bordered refs + layout image — which is then fed into \_build_edit_sample unchanged). A new CLI example layout_control_hidream_o1.py was added under examples/offline_inference/hidream_o1_image/.
+
+Formalized Phases 1–3 into the repo's standard surface across six areas: (1) docs/models/supported_models.md — added HiDreamO1ImagePipeline row alongside (not replacing) the existing HiDreamImagePipeline row for HiDream-I1; (2) recipes/HiDream/HiDream-O1-Image.md — new recipe covering Dev/Full variants, offline t2i/editing/layout commands, online serving verification, and the transformers>=4.57.1 requirement; (3) examples/offline_inference/hidream_o1_image/README.md — updated from Phase 1-only status to a full scripts table covering all three phases; (4) examples/online_serving/hidream_o1_image/ — four new files (run_server.sh, run_curl_hidream_o1.sh, openai_client_hidream_o1.py, README.md); (5) three e2e test files; (6) CI wiring in all three Buildkite YAML files.
+
+#### Challenges Faced:
+
+One bug was caught during testing: create_layout_reference_images was receiving a raw JSON string directly from pipeline_hidream_o1_image.py's forward() and passing it straight to parse_layout_bboxes, which expects already-parsed data (list/dict), not a string. Fixed by adding a string-check guard at the top of create_layout_reference_images: if isinstance(layout_bboxes, str): layout_bboxes = load_layout_bboxes(layout_bboxes).
+
+The main complexity was reading the actual Buildkite YAML structure before editing — each of the three files (test-ready.yml, test-merge.yml, test-nightly.yml) has a different pattern: test-ready.yml uses a multi-line bash -c wrapper with a full kubernetes podSpec, test-merge.yml uses a single-line pytest command with the same podSpec plus an HF_TOKEN secret, and test-nightly.yml uses a YAML block scalar >- list where the new expansion file needed to be appended as a new line before the -m flag. The nightly edit was one line; the ready/merge edits were ~35 lines each.
+
+#### Testing Strategy:
+
+24 new CPU unit tests in tests/diffusion/models/hidream_o1_image/test_layout_bbox_utils.py (marked core_model + cpu), organized into five test classes: TestLoadLayoutBboxes (JSON file + string parsing), TestParseLayoutBboxes (relative/percentage/mixed coordinate normalization), TestDrawBboxLayout (synthetic image output shape/content), TestAddOuterBorderKeepSize (pixel-level border correctness), and TestCreateLayoutReferenceImages (end-to-end list construction including the JSON-string input case that caught the bug). All 47 tests (23 from Phases 1–2 + 24 new) pass on CPU.
+
+Three e2e test files at distinct CI levels. test_hidream_o1_image.py (online, L2+L3): baseline t2i smoke carries both @pytest.mark.core_model and @pytest.mark.advanced_model so it runs in both test-ready.yml (L2) and test-merge.yml (L3); single-ref editing and two-ref personalization cases are advanced_model-only (L3). test_hidream_o1_image.py (offline, L3): @hardware_test + @pytest.mark.parametrize("omni_runner", ...) pattern mirrored from test_z_image.py. test_hidream_o1_image_expansion.py (L4 nightly): one baseline Dev t2i case now; parametrized rows for Cache-DiT, TP, CPU offload will be appended as Phases 5–7 land. CI steps added to all three Buildkite pipelines with H100 node selectors and mithril-h100-pool queue.
+
+#### Branch Link:
+
+https://github.com/SOKOUDJOU-LEOPOLD/vllm-omni/tree/leopold/Add-HiDream-O1-Image
+
 [Continue documenting as you work]
 
 ### Code Changes
