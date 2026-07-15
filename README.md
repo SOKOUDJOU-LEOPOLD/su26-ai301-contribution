@@ -297,6 +297,47 @@ Three e2e test files at distinct CI levels. test_hidream_o1_image.py (online, L2
 
 https://github.com/SOKOUDJOU-LEOPOLD/vllm-omni/tree/leopold/Add-HiDream-O1-Image
 
+### Week 6 Progress
+
+#### Implementation Progress
+
+Today I finished wiring up the last four phases of the HiDream-O1-Image integration — everything from inference acceleration to multi-GPU parallelism and memory management.
+
+Phase 5 — Cache-DiT was about plugging the model into vLLM-Omni's caching backend so it can skip redundant computations between denoising steps. The tricky part was that the cache-dit framework expects to find the transformer's decoder blocks as a direct attribute on the transformer object, but in HiDream-O1 they live nested under language_model.layers. I added a layers property alias on the transformer that just forwards to the right place — no framework changes needed, just a one-liner that makes the auto-detection path happy. I also had to set check_forward_pattern=False because our block forward has extra kwargs (attn_metadata, position_embeddings) that the stock pattern checker doesn't know about.
+
+Phase 6 — Parallelism was the biggest chunk. I broke it into four sub-phases:
+
+Tensor Parallelism: I replaced all the plain nn.Linear projections inside the attention and MLP layers with their parallel counterparts — fused QKVParallelLinear for Q/K/V together, MergedColumnParallelLinear for the gate+up MLP, and RowParallelLinear for the output projections. Since the model checkpoint stores Q, K, V as separate weights, I also had to add a stacked_params_mapping in load_weights() so the loader knows to route them into the fused param correctly.
+
+Sequence Parallelism: I declared an \_sp_plan on the transformer model. The key insight here was that I didn't need to touch attn_metadata at all — Ulysses-style SP uses AllToAll under the hood to restore the full sequence on each rank right before attention, which means the global span coordinates in full_attn_spans stay correct without any adjustment. I documented the one known limitation: the reference-image path (editing/personalization) uses deepstack position masks that would need per-rank coordinate adjustment to work under SP — T2I is fully supported, editing is not.
+
+CFG-Parallel and HSDP: These were essentially free. The pipeline already inherited CFGParallelMixin so CFG-parallel required zero code changes. HSDP just needed a shard condition function that identifies the decoder layers as the shard units, which I'd already stubbed in Phase 5.
+
+Phase 7 — CPU Offload meant implementing the SupportsComponentDiscovery protocol so the offloading machinery knows which parts of the model to move to CPU between denoising steps. Two things were novel here compared to every existing model in the codebase: first, HiDream-O1 has no VAE at all, so \_vae_modules is an empty list — I had to verify the offloader didn't assume at least one VAE exists (it doesn't, the loop just runs zero times). Second, the vision tower lives at transformer.visual, which is a submodule nested inside the main transformer object, not a top-level pipeline attribute. I used a dotted path string and confirmed the framework resolves it via operator.attrgetter — first time a nested encoder path has been used in the codebase.
+
+Phase 8 — Profiling was about wiring up DiffusionPipelineProfilerMixin and documenting the performance story. I added it to the pipeline's MRO and defined custom profiler targets to capture the three stages that matter most: vision-tower processing, patch embedding, and the per-step forward_generation. I then wrote a Performance section in the recipe doc explaining the two-bucket cost model — there's a one-time setup cost per request (vision tower + position IDs + patch embed) and a per-step cost (the full 8B decoder stack), and at only 28 steps for the Dev variant, that fixed overhead can actually dominate total latency.
+
+#### Challenges Faced
+
+The hardest thing to get right was the attention masking under Sequence Parallelism. HiDream-O1 builds a full_attn_spans list of global coordinates for each forward call, and I wasn't sure if those coordinates would break once the sequence got split across ranks. I had to read through the Ulysses SP implementation to confirm that AllToAll is done before the attention kernel, meaning each rank sees the full sequence locally for the actual computation — so the global coordinates are always valid. That was a relief, but it took real reading to be sure.
+
+The \_build_attention_subclasses pattern was also unusual. The HF Qwen3-VL class hierarchy is only importable at runtime (version-gated), so I couldn't use it in the module-level class body. I ended up capturing quant_config in a closure and building the parallel linear subclasses as local classes inside a function. It works cleanly but it's not a pattern I'd seen used this way before.
+
+The discovery that issubclass(HiDreamO1ImagePipeline, SupportsComponentDiscovery) raises a TypeError was a brief moment of confusion — turns out Python doesn't allow issubclass checks against Protocols that have non-method members. The actual runtime check the framework uses is isinstance(instance, ...), which works fine. Not a real bug, but it looked like one.
+
+#### Testing Strategy
+
+For unit tests I wrote 47 tests across three files, all runnable on CPU with no GPU required:
+
+test_packed_sequence.py — stress tests the attention metadata builder across all four use cases (T2I, editing, multi-reference, layout-bbox). Verifies that full_attn_spans coordinates are correct, that attn_mask matches them, and that text tokens are causal while image tokens are bidirectional.
+test_embed_cache.py — verifies that the vision tower is called exactly once per request regardless of how many denoising steps run. Without this cache the model would be slow and the test makes the contract explicit.
+test_layout_bbox_utils.py — tests bounding box parsing and layout image rendering, including edge cases like percentage vs relative coordinates and clamped boxes.
+For integration testing there are e2e offline and online tests that run the full pipeline against a real model. And for parallelism coverage I added a nightly expansion test with 8 parametrized server configs — one for each major feature: default, Cache-DiT, TP-2, Ulysses-2, CFG-parallel-2, HSDP, CPU offload, and layerwise offload.
+
+#### Branck Link
+
+https://github.com/SOKOUDJOU-LEOPOLD/vllm-omni/tree/leopold/Add-HiDream-O1-Image
+
 [Continue documenting as you work]
 
 ### Code Changes
