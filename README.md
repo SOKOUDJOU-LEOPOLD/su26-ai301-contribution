@@ -5,7 +5,7 @@
 **Contribution Number:** 1  
 **Student:** SOKOUDJOU LEOPOLD  
 **Issue:** https://github.com/vllm-project/vllm-omni/issues/3733  
-**Status:** Phase IV In-Progress
+**Status:** Phase IV Complete
 
 ---
 
@@ -350,9 +350,10 @@ https://github.com/SOKOUDJOU-LEOPOLD/vllm-omni/tree/leopold/Add-HiDream-O1-Image
 
 ## Pull Request
 
-**PR Link:** [GitHub PR URL when submitted]
+**PR Link:** https://github.com/vllm-project/vllm-omni/pull/5306
 
-**PR Description:** [Draft or final PR description - much of the content above can be adapted]
+**PR Description:**
+This PR adds support for HiDream-O1-Image (HiDream-ai/HiDream-O1-Image and HiDream-ai/HiDream-O1-Image-Dev), a ~8B-parameter image generation model from HiDream.ai. It supports text-to-image, instruction-based image editing, multi-reference subject personalization, and layout-bbox spatial conditioning — all in a single model with no VAE and no separate text encoder.
 
 **Maintainer Feedback:**
 
@@ -360,6 +361,7 @@ https://github.com/SOKOUDJOU-LEOPOLD/vllm-omni/tree/leopold/Add-HiDream-O1-Image
 - [Date]: [How you addressed it]
 
 **Status:** [Awaiting review / Iterating / Approved / Merged]
+Awaiting review
 
 ---
 
