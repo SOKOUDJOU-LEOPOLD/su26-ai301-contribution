@@ -198,18 +198,21 @@ Before opening the PR, I'll run the precheck-pr skill (referenced from CONTRIBUT
 
 ### Unit Tests
 
-- [ ] Test case 1: [Description]
-- [ ] Test case 2: [Description]
-- [ ] Test case 3: [Description]
+- Attention mask correctness: verify build_packed_attention_metadata produces a causal lower-triangular mask for text rows and full-True rows for gen tokens, for both T2I and edit sequences
+- ref_pixel_grid_thw dimensions: check the single-loop construction gives [1, rh // PATCH_SIZE, rw // PATCH_SIZE] where rh, rw come from the resized image, across different input sizes and ref_max values
+- layout_bboxes file-path rejection: passing a file path string to layout_bboxes via multi_modal_data in the pipeline should raise json.JSONDecodeError, not silently read the file
 
 ### Integration Tests
 
-- [ ] Integration scenario 1
-- [ ] Integration scenario 2
+- T2I forward pass: model loads, full forward pass runs, output is a valid PIL image at the requested resolution
+- Image editing forward pass: reference image is embedded via Qwen3-VL vision tower + pixel patches, edit instruction changes the output
+- Layout-bbox offline script: --layout-bboxes /path/to/bboxes.json pre-loads correctly via load_layout_bboxes() in the script and the pipeline receives a parsed list/dict, producing a bordered + layout-augmented output image
 
 ### Manual Testing
 
-[What you tested manually and results]
+- Ran the full T2I pipeline with HiDream-O1-Image-Dev (28 steps, guidance 1.0, shift 1.0) — output PNG at 1024×1024, looks correct
+- Confirmed RTD build passes in strict mode after splitting the slash-grouped docstring params (PR CI shows green)
+- Verified all 5 Copilot review comments are addressed: 1 invalid (no change needed), 4 fixed and pushed
 
 ---
 
@@ -357,10 +360,22 @@ This PR adds support for HiDream-O1-Image (HiDream-ai/HiDream-O1-Image and HiDre
 
 **Maintainer Feedback:**
 
-- [Date]: [Summary of feedback received]
-- [Date]: [How you addressed it]
+2026-07-22 — Got AI (Copilot) review comments on PR #5306 shortly after opening it. Five issues were flagged: a stale module docstring that still said "Phase 3, single GPU, no Cache-DiT / TP / SP yet" even though all 8 phases were done; dead code in \_build_edit_sample that computed ref_pixel_grid_thw twice (the first time with pre-resize dimensions — both wrong and immediately overwritten); a typo in the dev preset help text that said guidance 0.0 when the actual preset uses guidance_scale=1.0; a mask suggestion for build_packed_attention_metadata (evaluated as redundant — the causal lower-triangular already covers it); and a high-severity security flag where layout_bboxes in multi_modal_data was being passed to load_layout_bboxes(), which does an os.path.exists() check on any user-supplied string — meaning a remote client in online serving could probe the server filesystem and read arbitrary JSON files.
+
+Around the same time, CI caught two more issues: the Read the Docs build was aborting with Aborted with 4 warnings in strict mode! because griffe (the static analysis tool mkdocstrings uses) was choking on slash-grouped docstring params like pixel_values / image_grid_thw: — it treats the slash as part of the parameter name, which then doesn't match the function signature. And 12 commits were missing Signed-off-by headers, failing the DCO check. There was also a merge conflict in .buildkite/cuda/test-merge.yml — upstream had switched the Qwen Image Edit test from a full Kubernetes pod spec to mirror_hardwares: h100_1, and our branch had the old pod spec plus three new test blocks also using pod specs.
+
+2026-07-29 — Fixed everything:
+
+Split the slash-grouped docstring params into 4 proper separate entries → RTD build passes
+Rewrote the module docstring to match what the pipeline actually supports now
+Removed the dead first ref_pixel_grid_thw construction — one clean loop remains
+Fixed guidance 0.0 → 1.0 in the help text
+Fixed the security issue: pipeline now uses json.loads() directly so no file I/O from user-controlled data; the offline script pre-loads using load_layout_bboxes() before inserting into multi_modal_data
+Retroactively signed all 12 commits with git rebase HEAD~12 --signoff + force-push via SSH (VS Code's credential helper wasn't available over the remote SSH session)
+Resolved the test-merge.yml conflict by switching all 4 new E2E test blocks to mirror_hardwares: h100_1
 
 **Status:** [Awaiting review / Iterating / Approved / Merged]
+
 Awaiting review
 
 ---
@@ -369,20 +384,45 @@ Awaiting review
 
 ### Technical Skills Gained
 
-[What you learned technically]
+Integrating a full diffusion model pipeline into vLLM-Omni end-to-end — from registering the model class through wiring up Tensor Parallelism, Sequence Parallelism (Ulysses), CFG-Parallel, HSDP, Cache-DiT acceleration, and layerwise CPU offload. This was my first time working at that level of distributed inference infrastructure.
+
+Learned how griffe does static analysis on docstrings — specifically that it parses a / b: as a single parameter name with a slash in it, which then fails to match the function signature in strict mode. Simple fix but completely non-obvious from the error message.
+
+Learned the Buildkite mirror_hardwares shorthand, which re-runs a step on a different hardware pool by reference (inheriting all the step config) vs. duplicating a full k8s pod spec. Relevant for any future CI additions.
+
+Got comfortable with the full DCO flow — what it is, why it exists, and how to fix it retroactively without losing history using git rebase HEAD~N --signoff.
+
+Deepened my understanding of attention mask construction for packed sequences with mixed token types. Had to trace through \_build_t2i_sample and \_build_edit_sample to confirm that gen tokens always trail text tokens, which means the causal lower-triangular already prevents text→gen cross-attention — the extra masking Copilot suggested is genuinely redundant, not just apparently so.
+
+Security-aware API design for serving: any user-controlled string in multi_modal_data that reaches the serving loop should never be passed to functions that do filesystem access. The fix (push file-loading into the operator-controlled offline script, use json.loads() in the pipeline) is a clean pattern I'll reuse.
 
 ### Challenges Overcome
 
-[What was hard and how you solved it]
+RTD log truncation. The normal build log on Read the Docs cuts off at 50K chars, and the install phase alone exceeds that. The actual griffe warnings were in the mkdocs output, which comes after pip install — so the visible log stopped right before the error. Had to find the "Raw log" tab to see the full output.
+
+DCO + SSH push. Running git rebase HEAD~12 --signoff rewrites all 12 commits in one shot, but then git push kept failing with ECONNREFUSED /run/user/.../vscode-git-\*.sock — VS Code's credential helper wasn't available over the remote SSH session. Fixed by switching the remote to SSH: git remote set-url origin git@github.com:SOKOUDJOU-LEOPOLD/vllm-omni.git.
+
+test-merge.yml conflict. The naive read of the conflict was "accept ours to keep our 3 new test blocks." But that would have re-introduced the old Kubernetes pod spec that upstream had intentionally replaced with mirror_hardwares. Had to understand what mirror_hardwares does before making the call — it's not just a shorthand for the same thing, it's a different CI mechanism that the maintainers deliberately migrated to.
+
+Evaluating the mask suggestion. Couldn't just look at the mask code in isolation. Had to read through both \_build_t2i_sample and \_build_edit_sample — including the edit case where token_types == 0 covers VLM-processed reference image tokens, not just text — to confirm the sequence invariant: gen tokens (tms placeholder + target patches + ref pixel patches) always appear at positions ≥ txt_seq_len - 1, strictly after all text tokens. The causal mask does the job.
 
 ### What I'd Do Differently Next Time
 
-[Reflection on your process]
+Sign commits from day one, not retroactively. One git commit -s habit or a global signoff template would have avoided the whole DCO dance.
+
+Write the module docstring with the final feature set in mind. Saying "Phase 3, no TP/SP yet" made sense when I wrote it, but it reads sloppily in a review where all 8 phases are already done.
+
+Use individual parameter names in docstrings from the start. The a / b: slash-grouping felt convenient mid-implementation, but it breaks strict RTD builds and needs to be split anyway before merging.
+
+Run mkdocs build --strict locally before pushing. Would have caught the griffe warnings in 30 seconds instead of waiting for a CI build.
 
 ---
 
 ## Resources Used
 
-- [Link to helpful documentation]
-- [Tutorial or Stack Overflow post that helped]
-- [GitHub issues or discussions that helped]
+- HiDream-O1 reference implementation: https://github.com/HiDream-ai/HiDream-I1
+- griffe documentation (parameter parsing rules): https://mkdocstrings.github.io/griffe/
+- DeepSpeed Ulysses (Sequence Parallelism): https://arxiv.org/abs/2309.14509
+- Developer Certificate of Origin: https://developercertificate.org/
+- Buildkite pipeline reference: https://buildkite.com/docs/pipelines
+- Read the Docs build configuration: https://docs.readthedocs.io/en/stable/config-file/v2.html
